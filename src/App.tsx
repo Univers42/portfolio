@@ -26,6 +26,7 @@ function App() {
   const [routingMode, setRoutingMode] = useState<'balanced' | 'fast' | 'free'>('balanced')
   const [contextInput, setContextInput] = useState('')
   const [toast, setToast] = useState('')
+  const [isSending, setIsSending] = useState(false)
 
   const filteredProjects = useMemo(() => projects.filter((p) => {
     const matchCategory = category === 'All' || p.category === category
@@ -42,19 +43,56 @@ function App() {
 
   const updateAgent = (id: string, updater: (agent: Agent) => Agent) => setAgents((items) => items.map((agent) => agent.id === id ? updater(agent) : agent))
 
-  const sendMessage = () => {
+  const sendMessage = async () => {
     const text = draft.trim()
-    if (!text) return
+    if (!text || isSending) return
+    const startedAt = performance.now()
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     const userMessage: ChatMessage = { id: crypto.randomUUID(), senderId: 'you', senderName: 'You', senderRole: 'Workspace owner', avatarColor: 'from-zinc-500 to-zinc-700', content: text, timestamp: now }
-    const replyText = text.toLowerCase().includes('context')
-      ? `I found ${context.length} shared context items. The current workspace goal is: “${context[0]?.content}” I can use that as the starting point for this task.`
-      : text.toLowerCase().includes('review') || text.toLowerCase().includes('check')
-        ? `I’ll treat this as a ${activeAgent.role.toLowerCase()} task. In this demo, I can reason from the shared notes and sample project data, but I can’t inspect live repositories or run code yet.`
-        : `Got it. I’ve added this to the conversation with the shared context available. In this demo I can help shape the task, but live model execution and repository actions aren’t connected yet.`
-    const reply: ChatMessage = { id: crypto.randomUUID(), senderId: activeAgent.id, senderName: activeAgent.name, senderRole: activeAgent.role, avatarColor: activeAgent.avatarColor, content: replyText, modelUsed: `${chosenModel.name} · demo route`, latency: chosenModel.latencyMs, timestamp: now }
-    setMessages((items) => [...items, userMessage, reply])
+    const conversation = [...messages.filter((message) => !message.id.startsWith('msg-')), userMessage]
+      .slice(-8)
+      .map((message) => ({ role: message.senderId === 'you' ? 'user' as const : 'assistant' as const, content: message.content }))
+    setMessages((items) => [...items, userMessage])
     setDraft('')
+    setIsSending(true)
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agentName: activeAgent.name,
+          agentRole: activeAgent.role,
+          systemPrompt: activeAgent.systemPrompt,
+          rules: activeAgent.rules.filter((rule) => rule.enabled).map((rule) => rule.description),
+          context: context.map((item) => `${item.title}: ${item.content}`),
+          messages: conversation,
+        }),
+      })
+      const result: unknown = await response.json()
+      if (!result || typeof result !== 'object' || !('reply' in result) || typeof result.reply !== 'string') {
+        const error = result && typeof result === 'object' && 'error' in result && typeof result.error === 'string'
+          ? result.error
+          : 'The server returned an unexpected response.'
+        throw new Error(error)
+      }
+      const reply: ChatMessage = {
+        id: crypto.randomUUID(), senderId: activeAgent.id, senderName: activeAgent.name, senderRole: activeAgent.role,
+        avatarColor: activeAgent.avatarColor, content: result.reply, modelUsed: 'OpenRouter · free model router',
+        latency: Math.round(performance.now() - startedAt), timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      }
+      setMessages((items) => [...items, reply])
+    } catch (error) {
+      const reply: ChatMessage = {
+        id: crypto.randomUUID(), senderId: activeAgent.id, senderName: activeAgent.name, senderRole: activeAgent.role,
+        avatarColor: activeAgent.avatarColor,
+        content: error instanceof Error ? error.message : 'OpenRouter request failed. Try again.',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      }
+      setMessages((items) => [...items, reply])
+    } finally {
+      setIsSending(false)
+    }
   }
 
   const addContext = () => {
@@ -193,8 +231,8 @@ function App() {
             <div className="mt-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
               <div className="flex min-h-[620px] flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-[#0d0f15]">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3"><div className="flex items-center gap-2"><MessageSquare size={15} className="text-indigo-300" /><span className="text-xs font-medium text-zinc-300">Project room</span><span className="rounded-md bg-white/[0.04] px-1.5 py-1 text-[9px] text-zinc-600">{messages.length} messages</span></div><label className="flex items-center gap-2 rounded-lg border border-white/[0.06] px-2.5 py-1.5 text-[10px] text-zinc-500">Talk to<select value={selectedAgent} onChange={(e) => setSelectedAgent(e.target.value)} className="bg-transparent text-[10px] text-zinc-300 outline-none">{agents.map((a) => <option key={a.id} value={a.id} className="bg-[#10121a]">{a.name} · {a.role}</option>)}</select><ChevronDown size={11} /></label></div>
-                <div className="flex-1 space-y-5 overflow-y-auto p-4 sm:p-5">{messages.map((message) => <div key={message.id} className={`flex gap-3 ${message.senderId === 'you' ? 'flex-row-reverse' : ''}`}><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br ${message.avatarColor} text-[10px] font-semibold text-white`}>{message.senderId === 'you' ? 'SM' : message.senderName[0]}</span><div className={`max-w-[85%] ${message.senderId === 'you' ? 'text-right' : ''}`}><div className={`flex flex-wrap items-baseline gap-2 ${message.senderId === 'you' ? 'justify-end' : ''}`}><span className="text-[11px] font-medium text-zinc-300">{message.senderName}</span><span className="text-[9px] text-zinc-600">{message.senderRole} · {message.timestamp}</span></div><div className={`mt-1.5 rounded-2xl border px-3.5 py-3 text-left text-[11px] leading-5 ${message.senderId === 'you' ? 'border-indigo-300/10 bg-indigo-300/[0.07] text-zinc-300' : 'border-white/[0.05] bg-black/15 text-zinc-400'}`}>{message.content}</div>{message.modelUsed && <div className="mt-1.5 flex items-center gap-1.5 text-[9px] text-zinc-700"><Zap size={10} /> {message.modelUsed}{message.latency && <span> · {message.latency}ms · demo</span>}</div>}</div></div>)}</div>
-                <div className="border-t border-white/[0.06] p-3 sm:p-4"><div className="mb-2 flex items-center gap-2 text-[9px] text-zinc-600"><span className="flex items-center gap-1"><Layers3 size={11} /> Shared context attached</span><span>·</span><span>{context.length} items</span><button onClick={() => notify('Choose a context item in the right panel')} className="ml-auto text-indigo-300/80 hover:text-indigo-200">Manage</button></div><div className="flex items-end gap-2 rounded-xl border border-white/[0.08] bg-[#08090d] p-2"><textarea value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() } }} rows={2} placeholder={`Message ${activeAgent.name}…`} className="max-h-28 min-h-[42px] flex-1 resize-none bg-transparent px-2 py-2 text-xs text-zinc-300 outline-none placeholder:text-zinc-700" /><button onClick={sendMessage} disabled={!draft.trim()} className="grid h-9 w-9 place-items-center rounded-lg bg-indigo-400 text-white transition hover:bg-indigo-300 disabled:cursor-not-allowed disabled:opacity-30"><Send size={15} /></button></div><div className="mt-2 px-1 text-[9px] text-zinc-700">Enter to send · Shift + Enter for a new line · demo responses only</div></div>
+                <div className="flex-1 space-y-5 overflow-y-auto p-4 sm:p-5">{messages.map((message) => <div key={message.id} className={`flex gap-3 ${message.senderId === 'you' ? 'flex-row-reverse' : ''}`}><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-gradient-to-br ${message.avatarColor} text-[10px] font-semibold text-white`}>{message.senderId === 'you' ? 'SM' : message.senderName[0]}</span><div className={`max-w-[85%] ${message.senderId === 'you' ? 'text-right' : ''}`}><div className={`flex flex-wrap items-baseline gap-2 ${message.senderId === 'you' ? 'justify-end' : ''}`}><span className="text-[11px] font-medium text-zinc-300">{message.senderName}</span><span className="text-[9px] text-zinc-600">{message.senderRole} · {message.timestamp}</span></div><div className={`mt-1.5 rounded-2xl border px-3.5 py-3 text-left text-[11px] leading-5 ${message.senderId === 'you' ? 'border-indigo-300/10 bg-indigo-300/[0.07] text-zinc-300' : 'border-white/[0.05] bg-black/15 text-zinc-400'}`}>{message.content}</div>{message.modelUsed && <div className="mt-1.5 flex items-center gap-1.5 text-[9px] text-zinc-700"><Zap size={10} /> {message.modelUsed}{message.latency && <span> · {message.latency}ms · demo</span>}</div>}</div></div>)}{isSending && <div className="flex items-center gap-2 pl-11 text-[10px] text-zinc-600"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-300" /> {activeAgent.name} is thinking…</div>}</div>
+                <div className="border-t border-white/[0.06] p-3 sm:p-4"><div className="mb-2 flex items-center gap-2 text-[9px] text-zinc-600"><span className="flex items-center gap-1"><Layers3 size={11} /> Shared context attached</span><span>·</span><span>{context.length} items</span><button onClick={() => notify('Choose a context item in the right panel')} className="ml-auto text-indigo-300/80 hover:text-indigo-200">Manage</button></div><div className="flex items-end gap-2 rounded-xl border border-white/[0.08] bg-[#08090d] p-2"><textarea value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void sendMessage() } }} disabled={isSending} rows={2} placeholder={isSending ? 'Waiting for OpenRouter…' : `Message ${activeAgent.name}…`} className="max-h-28 min-h-[42px] flex-1 resize-none bg-transparent px-2 py-2 text-xs text-zinc-300 outline-none placeholder:text-zinc-700" /><button onClick={() => void sendMessage()} disabled={!draft.trim() || isSending} className="grid h-9 w-9 place-items-center rounded-lg bg-indigo-400 text-white transition hover:bg-indigo-300 disabled:cursor-not-allowed disabled:opacity-30"><Send size={15} /></button></div><div className="mt-2 px-1 text-[9px] text-zinc-700">Enter to send · Shift + Enter for a new line · OpenRouter free model router</div></div>
               </div>
               <aside className="space-y-4">
                 <div className="rounded-2xl border border-white/[0.07] bg-[#0d0f15] p-4"><div className="flex items-center justify-between"><div className="flex items-center gap-2 text-xs font-medium text-zinc-300"><Layers3 size={14} className="text-cyan-300" /> Shared context</div><span className="font-mono text-[9px] text-zinc-600">{context.length}</span></div><p className="mt-2 text-[10px] leading-4 text-zinc-600">Visible to every persona in this workspace.</p><div className="mt-3 space-y-2">{context.map((item) => <div key={item.id} className="rounded-xl border border-white/[0.05] bg-black/10 p-3"><div className="flex items-center gap-2"><span className={`h-1.5 w-1.5 rounded-full ${item.type === 'rule' ? 'bg-amber-300' : item.type === 'code' ? 'bg-cyan-300' : 'bg-indigo-300'}`} /><span className="text-[10px] font-medium text-zinc-400">{item.title}</span><button onClick={() => setContext((items) => items.filter((c) => c.id !== item.id))} aria-label={`Remove ${item.title}`} className="ml-auto text-zinc-700 hover:text-red-300"><X size={12} /></button></div><p className="mt-2 line-clamp-3 text-[10px] leading-4 text-zinc-600">{item.content}</p></div>)}</div><div className="mt-3 flex gap-2"><input value={contextInput} onChange={(e) => setContextInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addContext() }} placeholder="Add a shared note…" className="min-w-0 flex-1 rounded-lg border border-white/[0.06] bg-black/20 px-2.5 py-2 text-[10px] text-zinc-300 outline-none placeholder:text-zinc-700 focus:border-indigo-400/30" /><button onClick={addContext} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/[0.07] text-zinc-500 hover:bg-white/[0.04] hover:text-zinc-200"><Plus size={14} /></button></div></div>
