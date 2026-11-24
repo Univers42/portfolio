@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { ArrowDownRight, ArrowUpRight, Bot, Check, Code2, Copy, ExternalLink, Github, Layers3, Menu, MessageSquare, Plus, Search, Send, ShieldCheck, Sparkles, SquareTerminal, X, Zap } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ArrowDownRight, ArrowUpRight, Bot, Check, Code2, Copy, ExternalLink, Github, Layers3, Menu, MessageSquare, Moon, Plus, Search, Send, ShieldCheck, Sparkles, SquareTerminal, Sun, X, Zap } from 'lucide-react'
 import { agents as seedAgents, initialContext, initialMessages, models, projects as seedProjects } from './data/seed'
 import type { Agent, Category, ChatMessage, Project } from './types'
 
@@ -12,6 +12,26 @@ const toneFor = (id: string) => id === 'forge' ? 'tone-forge' : id === 'lens' ? 
 function App() {
   const [view, setView] = useState<View>('overview')
   const [mobileMenu, setMobileMenu] = useState(false)
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('theme')
+      if (saved === 'dark' || saved === 'light') return saved
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    }
+    return 'light'
+  })
+
+  useEffect(() => {
+    const root = document.documentElement
+    if (theme === 'dark') {
+      root.classList.add('dark')
+    } else {
+      root.classList.remove('dark')
+    }
+    try {
+      localStorage.setItem('theme', theme)
+    } catch {}
+  }, [theme])
   const [projects] = useState(seedProjects)
   const [agents, setAgents] = useState(seedAgents)
   const [context, setContext] = useState(initialContext)
@@ -125,7 +145,18 @@ function App() {
             <span className="nav-icon">{item.icon}</span>{item.label}
           </button>)}
         </nav>
-        <div className="topbar-note"><span className="status-dot" /> Independent work, in progress</div>
+        <div className="topbar-right">
+          <button
+            className="theme-toggle"
+            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+            <span className="theme-toggle-text">{theme === 'dark' ? 'Light' : 'Dark'}</span>
+          </button>
+          <div className="topbar-note"><span className="status-dot" /> Independent work, in progress</div>
+        </div>
       </div>
     </header>
 
